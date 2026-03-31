@@ -1,6 +1,7 @@
-const { chromium } = require('playwright-extra');
-const stealth = require('playwright-extra-stealth');
-stealth(chromium);
+const { chromium } = require('playwright');
+const stealth = require('playwright-stealth');
+const browser = await chromium.launch({...});
+stealth(browser);   // apply patches
 
 const UA_LIST = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
