@@ -1,8 +1,8 @@
-import { chromium } from 'playwright-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const stealth = require('playwright-stealth');
 
 chromium.use(StealthPlugin());
-
 const browser = await chromium.launch();
 const { chromium } = require('playwright');
 const stealth = require('playwright-stealth');
