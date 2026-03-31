@@ -1,6 +1,11 @@
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+chromium.use(StealthPlugin());
+
+const browser = await chromium.launch();
 const { chromium } = require('playwright');
 const stealth = require('playwright-stealth');
-const browser = await chromium.launch({...});
 stealth(browser);   // apply patches
 
 const UA_LIST = [
