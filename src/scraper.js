@@ -1,6 +1,7 @@
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
+// Apply the stealth plugin to hide the bot fingerprint
 chromium.use(StealthPlugin());
 
 const UA_LIST = [
@@ -9,9 +10,13 @@ const UA_LIST = [
 ];
 
 async function scrapeFilms(user) {
-  // Parse rotating residential proxy
-  const proxyRaw = process.env.PROXY_LIST.split(',')[0];
-  const proxyUrl = new URL(proxyRaw);
+  // Pull the proxy from the environment variable set in the EC2 script
+  const proxyRaw = process.env.PROXY_LIST;
+  if (!proxyRaw) {
+    throw new Error("PROXY_LIST environment variable is missing.");
+  }
+
+  const proxyUrl = new URL(proxyRaw.split(',')[0]);
 
   const browser = await chromium.launch({
     headless: true,
@@ -23,9 +28,8 @@ async function scrapeFilms(user) {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage', // Critical for small RAM
-      '--disable-gpu',
-      '--js-flags="--max-old-space-size=512"' // Limit memory usage
+      '--disable-dev-shm-usage', // Saves RAM on t2.micro
+      '--disable-blink-features=AutomationControlled'
     ]
   });
 
@@ -37,20 +41,14 @@ async function scrapeFilms(user) {
 
     const page = await context.newPage();
 
-    // Block unnecessary resources to save bandwidth/RAM
-    await page.route('**/*', route => {
-      const type = route.request().resourceType();
-      if (['image', 'font', 'media'].includes(type)) return route.abort();
-      route.continue();
-    });
-
-    // Strategy: Human-like navigation
+    // Human-like behavior: Visit homepage first
     await page.goto('https://letterboxd.com/', { waitUntil: 'networkidle', timeout: 60000 });
     await new Promise(r => setTimeout(r, Math.random() * 2000 + 1000));
 
+    // Target page
     await page.goto(`https://letterboxd.com/${user}/films/`, { waitUntil: 'networkidle', timeout: 60000 });
     
-    // Extract data (using your existing logic)
+    // Extract film slugs
     const slugs = await page.$$eval('li.poster-container img', imgs => imgs.map(img => img.alt));
 
     return slugs;

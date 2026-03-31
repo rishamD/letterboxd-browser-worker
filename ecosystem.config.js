@@ -2,11 +2,13 @@ module.exports = {
   apps: [{
     name: 'browser-worker',
     script: 'server.js',
-    instances: 1,      // DO NOT increase this on t2.micro
-    exec_mode: 'fork', // Fork is more memory-efficient for single instances
+    instances: 1,
+    exec_mode: 'fork',
     env_production: {
       NODE_ENV: 'production',
-      PORT: 8081
+      PORT: 8081,
+      // PM2 will grab PROXY_LIST from the shell
+      PROXY_LIST: process.env.PROXY_LIST 
     }
   }]
 };
