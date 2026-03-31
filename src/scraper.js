@@ -3,27 +3,30 @@ const UA_LIST = [
 ];
 
 async function scrapeWithBrowser(browser, user) {
-  // Create a fresh context/tab for this specific request
   const context = await browser.newContext({
-    userAgent: UA_LIST[0]
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
   });
   
   const page = await context.newPage();
 
   try {
-    // Speed optimization: Block images/css to load faster
-    await page.route('**/*', route => {
+    // 🔥 NEW: Block heavy assets to prevent timeouts
+    await page.route('**/*', (route) => {
       const type = route.request().resourceType();
-      if (['image', 'font', 'media'].includes(type)) return route.abort();
+      if (['image', 'font', 'stylesheet', 'media'].includes(type)) {
+        return route.abort();
+      }
       route.continue();
     });
 
+    // Use 'domcontentloaded' instead of 'networkidle' (much faster)
     await page.goto(`https://letterboxd.com/${user}/films/`, { 
-      waitUntil: 'domcontentloaded', // Faster than 'networkidle'
-      timeout: 30000 
+      waitUntil: 'domcontentloaded', 
+      timeout: 60000 // Increased to 60s for residential proxy lag
     });
 
-    await page.waitForSelector('li.poster-container', { timeout: 5000 });
+    // Wait specifically for the list element, not the whole page
+    await page.waitForSelector('.poster-list', { timeout: 10000 });
 
     const slugs = await page.$$eval('li.poster-container .poster', elements => {
       return elements.map(el => el.getAttribute('data-film-slug')).filter(s => s);
@@ -31,7 +34,6 @@ async function scrapeWithBrowser(browser, user) {
 
     return slugs;
   } finally {
-    // ONLY close the tab/context, not the browser!
     await context.close();
   }
 }
