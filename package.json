@@ -2,18 +2,17 @@
   "name": "letterboxd-browser-worker",
   "version": "1.0.0",
   "description": "Headless pool for Letterboxd film lists",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "pm2 start ecosystem.config.js --env development",
-    "prod": "pm2 start ecosystem.config.js --env production"
+    "start": "node server.js",
+    "prod": "pm2-runtime start ecosystem.config.js --env production"
   },
   "dependencies": {
     "express": "^4.19.0",
     "playwright": "^1.44.0",
-    "cors": "^2.8.5"
-  },
-  "devDependencies": {
+    "playwright-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "cors": "^2.8.5",
     "pm2": "^5.4.0"
   }
 }
