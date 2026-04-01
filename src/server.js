@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const { chromium } = require('playwright');
 const path = require('path');
