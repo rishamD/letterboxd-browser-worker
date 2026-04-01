@@ -1,72 +1,71 @@
-async function scrapeWithBrowser(browser, user) {
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    });
+async function scrapeWithBrowser(context, user) {
     const page = await context.newPage();
+    
+    // 1. SPEED OPTIMIZATION: Block fonts and images to prevent timeouts
+    await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (type === 'font' || type === 'image' || type === 'media') {
+            route.abort();
+        } else {
+            route.continue();
+        }
+    });
 
     try {
         const targetUrl = `https://letterboxd.com/${user}/films/`;
-        
-        // 1. Navigation
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log(`Navigating to: ${targetUrl}`);
 
-        // 2. Wait for the React component to "hydrate"
-        await page.waitForSelector('[data-component-class="LazyPoster"]', { 
-            state: 'attached', 
-            timeout: 30000 
+        // 2. Navigate with 60s timeout
+        const response = await page.goto(targetUrl, { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 60000 
         });
 
-        // 3. Precise Extraction Logic
+        // Check for Cloudflare/Block
+        if (response.status() === 403) {
+            throw new Error("Cloudflare Blocked the request (403)");
+        }
+
+        // 3. Wait for the LazyPoster components to appear
+        await page.waitForSelector('[data-component-class="LazyPoster"]', { timeout: 15000 });
+
+        // 4. Extraction Logic
         const filmData = await page.evaluate(() => {
             const results = [];
-            // We look for all the LazyPoster containers
             const posters = document.querySelectorAll('[data-component-class="LazyPoster"]');
             
             posters.forEach(poster => {
-                // Get the slug from the data attribute you found
                 const slug = poster.getAttribute('data-item-slug');
+                let rating = null;
                 
-                if (slug) {
-                    let rating = null;
-                    
-                    // The rating is in the NEXT sibling element <p class="poster-viewingdata">
-                    const viewingData = poster.nextElementSibling;
-                    if (viewingData && viewingData.classList.contains('poster-viewingdata')) {
-                        const ratingSpan = viewingData.querySelector('.rating');
-                        if (ratingSpan) {
-                            // Look for the "rated-X" class specifically
-                            const classList = Array.from(ratingSpan.classList);
-                            const ratedClass = classList.find(c => c.includes('rated-'));
-                            
-                            if (ratedClass) {
-                                // Extract the digits (e.g., "9" from "rated-9")
-                                const scoreMatch = ratedClass.match(/\d+/);
-                                if (scoreMatch) {
-                                    rating = parseInt(scoreMatch[0], 10) / 2;
-                                }
+                // Jump to the sibling metadata for the rating
+                const viewingData = poster.nextElementSibling;
+                if (viewingData && viewingData.classList.contains('poster-viewingdata')) {
+                    const ratingSpan = viewingData.querySelector('.rating');
+                    if (ratingSpan) {
+                        const ratedClass = Array.from(ratingSpan.classList).find(c => c.includes('rated-'));
+                        if (ratedClass) {
+                            const scoreMatch = ratedClass.match(/\d+/);
+                            if (scoreMatch) {
+                                rating = parseInt(scoreMatch[0], 10) / 2;
                             }
                         }
                     }
-                    results.push({ slug, rating });
                 }
+                if (slug) results.push({ slug, rating });
             });
             return results;
         });
 
-        return filmData;
+        await page.close();
+        return { user, films: filmData };
 
     } catch (err) {
-    console.error("Scrape failed:", err.message);
-    try {
-        // Add 'animations: "disabled"' and 'fullPage: false' for speed
-        await page.screenshot({ 
-            path: 'error_debug.png', 
-            animations: 'disabled',
-            timeout: 5000 // Give the screenshot only 5 seconds
-        });
-    } catch (screenshotErr) {
-        console.error("Could not take screenshot:", screenshotErr.message);
+        // FAST DEBUG SCREENSHOT: Doesn't wait for fonts
+        await page.screenshot({ path: 'error_debug.png', animations: 'disabled', timeout: 5000 }).catch(() => {});
+        await page.close();
+        throw err;
     }
-    throw err;
-}}
+}
+
 module.exports = { scrapeWithBrowser };

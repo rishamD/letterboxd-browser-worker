@@ -1,86 +1,68 @@
 const express = require('express');
-const cors = require('cors');
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { chromium } = require('playwright');
+const path = require('path');
 const { scrapeWithBrowser } = require('./scraper');
 
-// Use stealth to bypass bot detection
-chromium.use(StealthPlugin());
-
 const app = express();
+
+// Use the PORT from environment variables, or default to 8081
 const PORT = process.env.PORT || 8081;
 
-app.use(cors());
-
-let browser = null;
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        browser: browser ? 'connected' : 'initializing' 
-    });
-});
+let browserContext;
 
 async function initBrowser() {
-    try {
-        console.log("Launching persistent browser...");
-        const proxyRaw = process.env.PROXY_LIST;
-        if (!proxyRaw) {
-            console.error("ERROR: PROXY_LIST environment variable is not set!");
-            process.exit(1);
-        }
+    const userDataDir = path.join(__dirname, '../user_data');
+    
+    console.log("Starting browser with proxy configuration...");
 
-        const proxyUrl = new URL(proxyRaw);
-
-        browser = await chromium.launch({
-            // SET TO FALSE TO SEE THE WINDOW ON YOUR LAPTOP
-            headless: true, 
-            proxy: {
-                server: `${proxyUrl.protocol}//${proxyUrl.host}`,
-                username: proxyUrl.username,
-                password: proxyUrl.password
-            },
-            extraHTTPHeaders: {
-                'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'upgrade-insecure-requests': '1',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'accept-language': 'en-US,en;q=0.9',
-            },
-            args: [
-                '--no-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--use-fake-ui-for-media-stream',
-                '--window-size=1920,1080'
-            ]
-        });
-        console.log("Browser ready.");
-    } catch (err) {
-        console.error("Browser Launch Failed:", err.message);
-        setTimeout(initBrowser, 5000); // Retry after 5s
-    }
+    // Launching persistent context
+    // It pulls PROXY_URL, PROXY_USER, and PROXY_PASS from the system environment
+    browserContext = await chromium.launchPersistentContext(userDataDir, {
+        headless: true,
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        proxy: {
+            server: process.env.PROXY_URL,
+            username: process.env.PROXY_USER,
+            password: process.env.PROXY_PASS
+        },
+        viewport: { width: 1280, height: 720 },
+        extraHTTPHeaders: {
+            'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'upgrade-insecure-requests': '1',
+            'accept-language': 'en-US,en;q=0.9',
+        },
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-gpu',
+            '--single-process' 
+        ]
+    });
+    console.log("✅ Browser Context Initialized");
 }
 
 app.get('/browser', async (req, res) => {
     const user = req.query.user;
-    if (!user) return res.status(400).json({ error: 'missing ?user=' });
-
-    if (!browser) {
-        return res.status(503).json({ error: 'Browser warming up...' });
-    }
+    if (!user) return res.status(400).json({ error: "Missing user parameter" });
 
     try {
-        const slugs = await scrapeWithBrowser(browser, user);
-        return res.json({ user, latest50: slugs });
-    } catch (e) {
-        console.error("Request Error:", e.message);
-        return res.status(500).json({ error: e.message });
+        const data = await scrapeWithBrowser(browserContext, user);
+        res.json(data);
+    } catch (err) {
+        console.error("Request Error:", err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Worker online on http://localhost:${PORT}`);
-    initBrowser();
+initBrowser().then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server running on http://localhost:${PORT}`);
+    });
+}).catch(err => {
+    console.error("Failed to initialize browser:", err);
+    process.exit(1);
 });
