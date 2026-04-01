@@ -68,5 +68,5 @@ async function scrapeWithBrowser(browser, user) {
         console.error("Could not take screenshot:", screenshotErr.message);
     }
     throw err;
-}
+}}
 module.exports = { scrapeWithBrowser };
