@@ -56,12 +56,17 @@ async function scrapeWithBrowser(browser, user) {
         return filmData;
 
     } catch (err) {
-        // Log the error and take a screenshot for your laptop debugging
-        console.error("Scrape Error:", err.message);
-        await page.screenshot({ path: 'rating_debug.png' });
-        throw err;
-    } finally {
-        await context.close();
+    console.error("Scrape failed:", err.message);
+    try {
+        // Add 'animations: "disabled"' and 'fullPage: false' for speed
+        await page.screenshot({ 
+            path: 'error_debug.png', 
+            animations: 'disabled',
+            timeout: 5000 // Give the screenshot only 5 seconds
+        });
+    } catch (screenshotErr) {
+        console.error("Could not take screenshot:", screenshotErr.message);
     }
+    throw err;
 }
 module.exports = { scrapeWithBrowser };
