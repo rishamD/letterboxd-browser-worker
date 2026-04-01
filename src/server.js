@@ -58,7 +58,7 @@ app.get('/browser', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
+app.get('/health', (_req, res) => res.status(200).send('OK'));
 initBrowser().then(() => {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
