@@ -1,4 +1,5 @@
 import "dotenv/config";
+import http from "http";
 import {
     SQSClient,
     ReceiveMessageCommand,
@@ -8,7 +9,7 @@ import {
     DynamoDBClient,
     PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
-import { scrapeWithBrowser } from "./scraper.js";
+import { initBrowser, scrapeWithBrowser } from "./scraper.js";
 
 const sqs = new SQSClient({ region: process.env.AWS_REGION });
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
@@ -48,33 +49,19 @@ async function writeResult(username, status, films = null) {
 // ----------------------------------------------------------------------------------
 // PROCESS A SINGLE SQS MESSAGE
 // ----------------------------------------------------------------------------------
-async function processMessage(message) {
-    const username = message.Body?.trim();
-
-    if (!username) {
-        console.warn("Received empty message body, skipping...");
-        return;
-    }
-
+async function processMessage(username) {
     console.log(`Processing username: ${username}`);
 
     try {
-        // Mark as processing in DynamoDB
         await writeResult(username, "processing");
 
-        // Scrape the profile
         const films = await scrapeWithBrowser(username);
 
-        // Write results to DynamoDB
         await writeResult(username, "complete", films);
 
-        console.log(
-            `Done: ${username} — ${films.length} films scraped`
-        );
+        console.log(`✅ Done: ${username} — ${films.length} films scraped`);
     } catch (err) {
-        console.error(`Failed to scrape ${username}:`, err);
-
-        // Write error status so frontend doesn't poll forever
+        console.error(`❌ Failed to scrape ${username}:`, err);
         await writeResult(username, "error");
     }
 }
@@ -91,21 +78,26 @@ async function poll() {
                 new ReceiveMessageCommand({
                     QueueUrl: SQS_QUEUE_URL,
                     MaxNumberOfMessages: 1,
-                    WaitTimeSeconds: 20, // Long polling — reduces empty responses
+                    WaitTimeSeconds: 20,
                 })
             );
 
             const messages = response.Messages ?? [];
 
             if (messages.length === 0) {
-                console.log("No messages, continuing to poll...");
                 continue;
             }
 
             for (const message of messages) {
-                await processMessage(message);
+                const username = message.Body?.trim();
 
-                // Delete message from SQS after successful processing
+                if (!username) {
+                    console.warn("Empty message body, skipping...");
+                    continue;
+                }
+
+                await processMessage(username);
+
                 await sqs.send(
                     new DeleteMessageCommand({
                         QueueUrl: SQS_QUEUE_URL,
@@ -115,17 +107,14 @@ async function poll() {
             }
         } catch (err) {
             console.error("SQS polling error:", err);
-            // Wait 5 seconds before retrying to avoid hammering on error
             await new Promise((res) => setTimeout(res, 5000));
         }
     }
 }
 
 // ----------------------------------------------------------------------------------
-// HEALTH CHECK (Required for ASG / load balancer)
+// HEALTH CHECK SERVER
 // ----------------------------------------------------------------------------------
-import http from "http";
-
 const PORT = process.env.PORT ?? 8081;
 
 const server = http.createServer((req, res) => {
@@ -138,7 +127,13 @@ const server = http.createServer((req, res) => {
     }
 });
 
-server.listen(PORT, () => {
-    console.log(`Health check server running on port ${PORT}`);
-    poll(); // Start SQS polling after server is up
+server.listen(PORT, "0.0.0.0", async () => {
+    console.log(`🚀 Health check server running on port ${PORT}`);
+    try {
+        await initBrowser();
+        poll();
+    } catch (err) {
+        console.error("Failed to initialize browser:", err);
+        process.exit(1);
+    }
 });
