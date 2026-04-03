@@ -7,6 +7,7 @@ chromium.use(stealth());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+let browser;
 let browserContext;
 
 const userAgents = [
@@ -16,28 +17,14 @@ const userAgents = [
 ];
 
 export async function initBrowser() {
-    const userDataDir = path.join(__dirname, "../user_data");
-    const randomUA =
-        userAgents[Math.floor(Math.random() * userAgents.length)];
-
     console.log("Starting browser with proxy configuration...");
 
-    browserContext = await chromium.launchPersistentContext(userDataDir, {
+    browser = await chromium.launch({
         headless: true,
-        userAgent: randomUA,
         proxy: {
             server: process.env.PROXY_URL,
             username: process.env.PROXY_USER,
             password: process.env.PROXY_PASS,
-        },
-        viewport: { width: 1280, height: 720 },
-        extraHTTPHeaders: {
-            "sec-ch-ua":
-                '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "upgrade-insecure-requests": "1",
-            "accept-language": "en-US,en;q=0.9",
         },
         args: [
             "--no-sandbox",
@@ -49,7 +36,26 @@ export async function initBrowser() {
         ],
     });
 
+    browserContext = await browser.newContext({
+        userAgent:
+            userAgents[Math.floor(Math.random() * userAgents.length)],
+        viewport: { width: 1280, height: 720 },
+        extraHTTPHeaders: {
+            "sec-ch-ua":
+                '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "upgrade-insecure-requests": "1",
+            "accept-language": "en-US,en;q=0.9",
+        },
+    });
+
     console.log("✅ Browser Context Initialized");
+}
+
+export async function closeBrowser() {
+    await browserContext?.close();
+    await browser?.close();
 }
 
 export async function checkIp() {
@@ -61,11 +67,10 @@ export async function checkIp() {
 }
 
 export async function scrapeWithBrowser(username) {
-    await checkIp(); // was missing await
+    await checkIp();
 
     const page = await browserContext.newPage();
 
-    // Block fonts, images, media to speed things up
     await page.route("**/*", (route) => {
         const type = route.request().resourceType();
         if (type === "font" || type === "image" || type === "media") {
@@ -79,7 +84,6 @@ export async function scrapeWithBrowser(username) {
         const targetUrl = `https://letterboxd.com/${username}/films/`;
         console.log(`Navigating to: ${targetUrl}`);
 
-        // Human-like delay before navigating
         await page.waitForTimeout(Math.random() * 2000 + 1000);
 
         const response = await page.goto(targetUrl, {
