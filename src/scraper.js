@@ -42,7 +42,16 @@ export async function initBrowser() {
     console.log("✅ Browser Context Initialized");
 }
 
+export async function checkIp() {
+    const page = await browserContext.newPage();
+    await page.goto("https://api.ipify.org?format=json");
+    const body = await page.textContent("body");
+    await page.close();
+    console.log("Browser IP:", body);
+}
+
 export async function scrapeWithBrowser(username) {
+    checkIp()
     const page = await browserContext.newPage();
 
     // Block fonts, images, media to speed things up
