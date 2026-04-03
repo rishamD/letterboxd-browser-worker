@@ -12,6 +12,8 @@
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "cors": "^2.8.5",
+    "@aws-sdk/client-sqs": "^3",
+    "@aws-sdk/client-dynamodb": "^3",
     "dotenv": "^16.4.0",
     "pm2": "^5.4.0"
   }

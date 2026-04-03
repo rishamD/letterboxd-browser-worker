@@ -1,69 +1,144 @@
-require('dotenv').config();
-const express = require('express');
-const { chromium } = require('playwright');
-const path = require('path');
-const { scrapeWithBrowser } = require('./scraper');
+import "dotenv/config";
+import {
+    SQSClient,
+    ReceiveMessageCommand,
+    DeleteMessageCommand,
+} from "@aws-sdk/client-sqs";
+import {
+    DynamoDBClient,
+    PutItemCommand,
+} from "@aws-sdk/client-dynamodb";
+import { scrapeWithBrowser } from "./scraper.js";
 
-const app = express();
+const sqs = new SQSClient({ region: process.env.AWS_REGION });
+const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
 
-// Use the PORT from environment variables, or default to 8081
-const PORT = process.env.PORT || 8081;
+const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
+const DYNAMODB_TABLE = process.env.DYNAMODB_TABLE;
 
-let browserContext;
+// ----------------------------------------------------------------------------------
+// WRITE TO DYNAMODB
+// ----------------------------------------------------------------------------------
+async function writeResult(username, status, films = null) {
+    const item = {
+        username: { S: username },
+        status: { S: status },
+        updatedAt: { S: new Date().toISOString() },
+    };
 
-async function initBrowser() {
-    const userDataDir = path.join(__dirname, '../user_data');
-    
-    console.log("Starting browser with proxy configuration...");
+    if (films) {
+        item.films = {
+            L: films.map((f) => ({
+                M: {
+                    slug: { S: f.slug },
+                    rating: { N: String(f.rating ?? 0) },
+                },
+            })),
+        };
+    }
 
-    // Launching persistent context
-    // It pulls PROXY_URL, PROXY_USER, and PROXY_PASS from the system environment
-    browserContext = await chromium.launchPersistentContext(userDataDir, {
-        headless: true,
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        proxy: {
-            server: process.env.PROXY_URL,
-            username: process.env.PROXY_USER,
-            password: process.env.PROXY_PASS
-        },
-        viewport: { width: 1280, height: 720 },
-        extraHTTPHeaders: {
-            'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'upgrade-insecure-requests': '1',
-            'accept-language': 'en-US,en;q=0.9',
-        },
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-gpu',
-            '--single-process' 
-        ]
-    });
-    console.log("✅ Browser Context Initialized");
+    await dynamo.send(
+        new PutItemCommand({
+            TableName: DYNAMODB_TABLE,
+            Item: item,
+        })
+    );
 }
 
-app.get('/browser', async (req, res) => {
-    const user = req.query.user;
-    if (!user) return res.status(400).json({ error: "Missing user parameter" });
+// ----------------------------------------------------------------------------------
+// PROCESS A SINGLE SQS MESSAGE
+// ----------------------------------------------------------------------------------
+async function processMessage(message) {
+    const username = message.Body?.trim();
+
+    if (!username) {
+        console.warn("Received empty message body, skipping...");
+        return;
+    }
+
+    console.log(`Processing username: ${username}`);
 
     try {
-        const data = await scrapeWithBrowser(browserContext, user);
-        res.json(data);
+        // Mark as processing in DynamoDB
+        await writeResult(username, "processing");
+
+        // Scrape the profile
+        const films = await scrapeWithBrowser(username);
+
+        // Write results to DynamoDB
+        await writeResult(username, "complete", films);
+
+        console.log(
+            `Done: ${username} — ${films.length} films scraped`
+        );
     } catch (err) {
-        console.error("Request Error:", err.message);
-        res.status(500).json({ error: err.message });
+        console.error(`Failed to scrape ${username}:`, err);
+
+        // Write error status so frontend doesn't poll forever
+        await writeResult(username, "error");
+    }
+}
+
+// ----------------------------------------------------------------------------------
+// SQS POLLING LOOP
+// ----------------------------------------------------------------------------------
+async function poll() {
+    console.log("Polling SQS for messages...");
+
+    while (true) {
+        try {
+            const response = await sqs.send(
+                new ReceiveMessageCommand({
+                    QueueUrl: SQS_QUEUE_URL,
+                    MaxNumberOfMessages: 1,
+                    WaitTimeSeconds: 20, // Long polling — reduces empty responses
+                })
+            );
+
+            const messages = response.Messages ?? [];
+
+            if (messages.length === 0) {
+                console.log("No messages, continuing to poll...");
+                continue;
+            }
+
+            for (const message of messages) {
+                await processMessage(message);
+
+                // Delete message from SQS after successful processing
+                await sqs.send(
+                    new DeleteMessageCommand({
+                        QueueUrl: SQS_QUEUE_URL,
+                        ReceiptHandle: message.ReceiptHandle,
+                    })
+                );
+            }
+        } catch (err) {
+            console.error("SQS polling error:", err);
+            // Wait 5 seconds before retrying to avoid hammering on error
+            await new Promise((res) => setTimeout(res, 5000));
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------------
+// HEALTH CHECK (Required for ASG / load balancer)
+// ----------------------------------------------------------------------------------
+import http from "http";
+
+const PORT = process.env.PORT ?? 8081;
+
+const server = http.createServer((req, res) => {
+    if (req.url === "/health" && req.method === "GET") {
+        res.writeHead(200);
+        res.end("OK");
+    } else {
+        res.writeHead(404);
+        res.end("Not found");
     }
 });
-app.get('/health', (_req, res) => res.status(200).send('OK'));
-initBrowser().then(() => {
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Server running on http://localhost:${PORT}`);
-    });
-}).catch(err => {
-    console.error("Failed to initialize browser:", err);
-    process.exit(1);
+
+server.listen(PORT, () => {
+    console.log(`Health check server running on port ${PORT}`);
+    poll(); // Start SQS polling after server is up
 });
