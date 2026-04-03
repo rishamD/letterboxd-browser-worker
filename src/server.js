@@ -89,8 +89,9 @@ async function poll() {
             }
 
             for (const message of messages) {
-                const username = message.Body?.trim();
-
+                const body = JSON.parse(message.Body);
+                const username = body.username?.trim();
+                
                 if (!username) {
                     console.warn("Empty message body, skipping...");
                     continue;
