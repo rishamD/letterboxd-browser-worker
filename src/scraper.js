@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let browserContext;
 
 export async function initBrowser() {
-    const userDataDir = path.join(__dirname, "../../user_data");
+    const userDataDir = path.join(__dirname, "../user_data");
 
     console.log("Starting browser with proxy configuration...");
 
