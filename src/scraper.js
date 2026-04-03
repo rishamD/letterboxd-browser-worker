@@ -1,20 +1,30 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
 import path from "path";
 import { fileURLToPath } from "url";
+
+chromium.use(stealth());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let browserContext;
 
+const userAgents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+];
+
 export async function initBrowser() {
     const userDataDir = path.join(__dirname, "../user_data");
+    const randomUA =
+        userAgents[Math.floor(Math.random() * userAgents.length)];
 
     console.log("Starting browser with proxy configuration...");
 
     browserContext = await chromium.launchPersistentContext(userDataDir, {
         headless: true,
-        userAgent:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        userAgent: randomUA,
         proxy: {
             server: process.env.PROXY_URL,
             username: process.env.PROXY_USER,
@@ -51,7 +61,8 @@ export async function checkIp() {
 }
 
 export async function scrapeWithBrowser(username) {
-    checkIp()
+    await checkIp(); // was missing await
+
     const page = await browserContext.newPage();
 
     // Block fonts, images, media to speed things up
@@ -68,6 +79,9 @@ export async function scrapeWithBrowser(username) {
         const targetUrl = `https://letterboxd.com/${username}/films/`;
         console.log(`Navigating to: ${targetUrl}`);
 
+        // Human-like delay before navigating
+        await page.waitForTimeout(Math.random() * 2000 + 1000);
+
         const response = await page.goto(targetUrl, {
             waitUntil: "domcontentloaded",
             timeout: 60000,
@@ -77,10 +91,9 @@ export async function scrapeWithBrowser(username) {
             throw new Error("Cloudflare blocked the request (403)");
         }
 
-        await page.waitForSelector(
-            '[data-component-class="LazyPoster"]',
-            { timeout: 15000 }
-        );
+        await page.waitForSelector('[data-component-class="LazyPoster"]', {
+            timeout: 15000,
+        });
 
         const films = await page.evaluate(() => {
             const results = [];
