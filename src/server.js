@@ -9,7 +9,11 @@ import {
     DynamoDBClient,
     PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
-import { initBrowser, scrapeWithBrowser } from "./scraper.js";
+import {
+    initBrowser,
+    closeBrowser,
+    scrapeWithBrowser,
+} from "./scraper.js";
 
 const sqs = new SQSClient({ region: process.env.AWS_REGION });
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
@@ -32,6 +36,7 @@ async function writeResult(username, status, films = null) {
             L: films.map((f) => ({
                 M: {
                     slug: { S: f.slug },
+                    filmId: { S: String(f.filmId ?? "") },
                     rating: { N: String(f.rating ?? 0) },
                 },
             })),
@@ -44,6 +49,21 @@ async function writeResult(username, status, films = null) {
             Item: item,
         })
     );
+}
+
+// ----------------------------------------------------------------------------------
+// REINITIALIZE BROWSER
+// ----------------------------------------------------------------------------------
+async function reinitializeBrowser() {
+    console.log("Reinitializing browser...");
+
+    try {
+        await closeBrowser();
+    } catch (err) {
+        console.warn("Error while closing browser:", err);
+    }
+
+    await initBrowser();
 }
 
 // ----------------------------------------------------------------------------------
@@ -60,9 +80,53 @@ async function processMessage(username) {
         await writeResult(username, "complete", films);
 
         console.log(`✅ Done: ${username} — ${films.length} films scraped`);
+
+        return {
+            success: true,
+            shouldDelete: true,
+        };
     } catch (err) {
         console.error(`❌ Failed to scrape ${username}:`, err);
+
+        const message = err instanceof Error ? err.message : String(err);
+
+        if (message.includes("404") || message.includes("not found")) {
+            await writeResult(username, "not_found");
+
+            return {
+                success: false,
+                shouldDelete: true,
+            };
+        }
+
+        if (message.includes("403")) {
+            await writeResult(username, "error");
+
+            console.warn(
+                `403 detected for ${username}. Browser will be reinitialized.`
+            );
+
+            try {
+                await reinitializeBrowser();
+            } catch (reinitErr) {
+                console.error(
+                    "Failed to reinitialize browser after 403:",
+                    reinitErr
+                );
+            }
+
+            return {
+                success: false,
+                shouldDelete: false,
+            };
+        }
+
         await writeResult(username, "error");
+
+        return {
+            success: false,
+            shouldDelete: false,
+        };
     }
 }
 
@@ -89,22 +153,48 @@ async function poll() {
             }
 
             for (const message of messages) {
-                const body = JSON.parse(message.Body);
-                const username = body.username?.trim();
-                
-                if (!username) {
-                    console.warn("Empty message body, skipping...");
-                    continue;
+                let username = null;
+
+                try {
+                    const body = JSON.parse(message.Body);
+                    username = body.username?.trim();
+
+                    if (!username) {
+                        console.warn("Empty message body, deleting...");
+
+                        await sqs.send(
+                            new DeleteMessageCommand({
+                                QueueUrl: SQS_QUEUE_URL,
+                                ReceiptHandle: message.ReceiptHandle,
+                            })
+                        );
+
+                        continue;
+                    }
+
+                    const result = await processMessage(username);
+
+                    if (result.shouldDelete) {
+                        await sqs.send(
+                            new DeleteMessageCommand({
+                                QueueUrl: SQS_QUEUE_URL,
+                                ReceiptHandle: message.ReceiptHandle,
+                            })
+                        );
+
+                        console.log(`Deleted message for ${username}`);
+                    } else {
+                        console.warn(
+                            `Leaving message in queue for retry: ${username}`
+                        );
+                    }
+                } catch (err) {
+                    console.error(
+                        `Error handling message${username ? ` for ${username}` : ""}:`,
+                        err
+                    );
+                    console.warn("Message not deleted, it will return to the queue.");
                 }
-
-                await processMessage(username);
-
-                await sqs.send(
-                    new DeleteMessageCommand({
-                        QueueUrl: SQS_QUEUE_URL,
-                        ReceiptHandle: message.ReceiptHandle,
-                    })
-                );
             }
         } catch (err) {
             console.error("SQS polling error:", err);
@@ -130,6 +220,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "0.0.0.0", async () => {
     console.log(`🚀 Health check server running on port ${PORT}`);
+
     try {
         await initBrowser();
         poll();

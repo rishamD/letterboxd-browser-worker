@@ -56,11 +56,16 @@ export async function initBrowser() {
 export async function closeBrowser() {
     await browserContext?.close();
     await browser?.close();
+    browserContext = undefined;
+    browser = undefined;
 }
 
 export async function checkIp() {
     const page = await browserContext.newPage();
-    await page.goto("https://api.ipify.org?format=json");
+    await page.goto("https://api.ipify.org?format=json", {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+    });
     const body = await page.textContent("body");
     await page.close();
     console.log("Browser IP:", body);
@@ -91,6 +96,14 @@ export async function scrapeWithBrowser(username) {
             timeout: 60000,
         });
 
+        if (!response) {
+            throw new Error("No response from page");
+        }
+
+        if (response.status() === 404) {
+            throw new Error("Page not found (404)");
+        }
+
         if (response.status() === 403) {
             throw new Error("Cloudflare blocked the request (403)");
         }
@@ -107,6 +120,7 @@ export async function scrapeWithBrowser(username) {
 
             posters.forEach((poster) => {
                 const slug = poster.getAttribute("data-item-slug");
+                const filmId = poster.getAttribute("data-film-id");
                 let rating = null;
 
                 const viewingData = poster.nextElementSibling;
@@ -128,7 +142,13 @@ export async function scrapeWithBrowser(username) {
                     }
                 }
 
-                if (slug) results.push({ slug, rating });
+                if (slug) {
+                    results.push({
+                        slug,
+                        filmId,
+                        rating,
+                    });
+                }
             });
 
             return results;
@@ -144,7 +164,7 @@ export async function scrapeWithBrowser(username) {
                 timeout: 5000,
             })
             .catch(() => {});
-        await page.close();
+        await page.close().catch(() => {});
         throw err;
     }
 }
