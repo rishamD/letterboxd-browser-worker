@@ -38,6 +38,9 @@ async function writeResult(username, status, films = null) {
                     slug: { S: f.slug },
                     filmId: { S: String(f.filmId ?? "") },
                     rating: { N: String(f.rating ?? 0) },
+                    ...(f.displayName && {
+                        displayName: { S: f.displayName },
+                    }),
                 },
             })),
         };
@@ -193,7 +196,9 @@ async function poll() {
                         `Error handling message${username ? ` for ${username}` : ""}:`,
                         err
                     );
-                    console.warn("Message not deleted, it will return to the queue.");
+                    console.warn(
+                        "Message not deleted, it will return to the queue."
+                    );
                 }
             }
         } catch (err) {
