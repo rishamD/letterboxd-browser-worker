@@ -121,6 +121,9 @@ export async function scrapeWithBrowser(username) {
             posters.forEach((poster) => {
                 const slug = poster.getAttribute("data-item-slug");
                 const filmId = poster.getAttribute("data-film-id");
+                const displayName = poster.getAttribute(
+                    "data-item-full-display-name"
+                );
                 let rating = null;
 
                 const viewingData = poster.nextElementSibling;
@@ -146,6 +149,7 @@ export async function scrapeWithBrowser(username) {
                     results.push({
                         slug,
                         filmId,
+                        displayName,
                         rating,
                     });
                 }
