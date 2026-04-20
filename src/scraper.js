@@ -4,12 +4,22 @@ import stealth from "puppeteer-extra-plugin-stealth";
 chromium.use(stealth());
 
 let browser;
-let browserContext;
+let browserContext; // Persists across successful jobs
 
 const userAgents = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ];
+
+// Helper to create a fresh context
+async function createNewContext() {
+    if (browserContext) await browserContext.close();
+    browserContext = await browser.newContext({
+        userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
+        viewport: { width: 1280, height: 720 },
+    });
+    console.log("♻️ New Browser Context Created");
+}
 
 export async function initBrowser() {
     console.log("🚀 Initializing Browser for EC2 Instance...");
@@ -25,25 +35,16 @@ export async function initBrowser() {
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--single-process", 
+            "--single-process",
+            "--disable-blink-features=AutomationControlled",
         ],
     });
-
-    browserContext = await browser.newContext({
-        userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
-        viewport: { width: 1280, height: 720 },
-    });
-}
-
-export async function closeBrowser() {
-    await browserContext?.close();
-    await browser?.close();
+    await createNewContext();
 }
 
 export async function scrapePage(username, page = 1) {
     const pageObj = await browserContext.newPage();
 
-    // Block non-essential resources to speed up page load
     await pageObj.route("**/*", (route) => {
         const type = route.request().resourceType();
         if (["font", "image", "media", "stylesheet", "other"].includes(type)) {
@@ -56,13 +57,29 @@ export async function scrapePage(username, page = 1) {
     const targetUrl = `https://letterboxd.com/${username}/films/page/${page}/`;
 
     try {
-        // Human-like delay
-        await new Promise(r => setTimeout(r, Math.random() * 1500 + 500));
+        await new Promise(r => setTimeout(r, Math.random() * 1500 + 1000));
 
         const res = await pageObj.goto(targetUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: 30000,
+            waitUntil: "networkidle",
+            timeout: 60000,
         });
+
+        if (res && res.status() === 403) {
+            // Fetch the IP used for this blocked request to verify rotation
+            let usedIp = "Unknown";
+            try {
+                const ipCheck = await pageObj.goto("https://api.ipify.org", { timeout: 5000 });
+                usedIp = await ipCheck.text();
+            } catch (e) {
+                usedIp = "Failed to fetch IP during block";
+            }
+
+            console.error(`🚨 403 Forbidden at IP: ${usedIp}`);
+            
+            // Purge the current context so the next attempt starts fresh
+            await createNewContext();
+            throw new Error("403_BLOCKED");
+        }
 
         if (!res || res.status() !== 200) throw new Error(`Status ${res?.status()}`);
 
@@ -70,9 +87,7 @@ export async function scrapePage(username, page = 1) {
 
         const data = await pageObj.evaluate(({ isFirstPage }) => {
             const results = [];
-            const posters = document.querySelectorAll('[data-component-class="LazyPoster"]');
-
-            posters.forEach((poster) => {
+            document.querySelectorAll('[data-component-class="LazyPoster"]').forEach((poster) => {
                 const slug = poster.getAttribute("data-item-slug");
                 const filmId = poster.getAttribute("data-film-id");
                 const displayName = poster.getAttribute("data-item-full-display-name");
@@ -101,7 +116,6 @@ export async function scrapePage(username, page = 1) {
                     if (match) totalPages = parseInt(match[1], 10);
                 }
             }
-
             return { films: results, totalPages };
         }, { isFirstPage: page === 1 });
 

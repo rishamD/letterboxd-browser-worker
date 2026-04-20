@@ -28,7 +28,6 @@ async function mergeAndWriteFilms(username, newFilms, updateMeta = true) {
     const serialized = serializeFilms(newFilms);
     
     if (updateMeta) {
-        // Sets status to complete and replaces/creates item
         await dynamo.send(new PutItemCommand({
             TableName: DYNAMODB_TABLE,
             Item: {
@@ -39,7 +38,6 @@ async function mergeAndWriteFilms(username, newFilms, updateMeta = true) {
             },
         }));
     } else {
-        // Appends to existing list for background page jobs
         await dynamo.send(new UpdateItemCommand({
             TableName: DYNAMODB_TABLE,
             Key: { username: { S: username } },
@@ -60,7 +58,7 @@ async function processMessage(message) {
     const body = JSON.parse(message.Body);
     const { username, page } = body;
 
-    console.log(`📥 Processing: ${username} ${page ? `(Page ${page})` : "(Initial Job)"}`);
+    console.log(`📥 Processing: ${username} ${page ? `(p${page})` : "(Initial Job)"}`);
 
     try {
         if (page) {
@@ -88,8 +86,11 @@ async function processMessage(message) {
         
         console.log(`✅ Finished: ${username} ${page ? `p${page}` : 'Initial'}`);
     } catch (err) {
+        if (err.message === "403_BLOCKED") {
+            // Re-throw so the poll loop can trigger the cooldown
+            throw err;
+        }
         console.error(`❌ Error processing ${username}:`, err.message);
-        // Message will return to queue automatically after VisibilityTimeout
     }
 }
 
@@ -100,13 +101,20 @@ async function poll() {
         try {
             const response = await sqs.send(new ReceiveMessageCommand({
                 QueueUrl: SQS_QUEUE_URL,
-                MaxNumberOfMessages: 1, // Strictly one job at a time
+                MaxNumberOfMessages: 1, 
                 WaitTimeSeconds: 20,
             }));
 
             if (response.Messages && response.Messages.length > 0) {
-                // Await ensures we finish one job before starting the next loop iteration
-                await processMessage(response.Messages[0]);
+                try {
+                    await processMessage(response.Messages[0]);
+                } catch (processErr) {
+                    if (processErr.message === "403_BLOCKED") {
+                        // Wait 60 seconds before trying the next SQS message
+                        console.log("⏸️ Cooling down for 60s due to 403 block...");
+                        await new Promise(r => setTimeout(r, 60000));
+                    }
+                }
             }
         } catch (err) {
             console.error("SQS Polling Error:", err);
