@@ -37,8 +37,7 @@ export async function initBrowser() {
     });
 
     browserContext = await browser.newContext({
-        userAgent:
-            userAgents[Math.floor(Math.random() * userAgents.length)],
+        userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
         viewport: { width: 1280, height: 720 },
         extraHTTPHeaders: {
             "sec-ch-ua":
@@ -71,12 +70,49 @@ export async function checkIp() {
     console.log("Browser IP:", body);
 }
 
-export async function scrapeWithBrowser(username) {
-    await checkIp();
+function extractFilmsFromPage(posters) {
+    const results = [];
 
-    const page = await browserContext.newPage();
+    posters.forEach((poster) => {
+    const slug = poster.getAttribute("data-item-slug");
+    const title = poster.getAttribute("data-item-full-display-name");
+    let rating = null;
 
-    await page.route("**/*", (route) => {
+    const viewingData = poster.nextElementSibling;
+    if (
+        viewingData &&
+        viewingData.classList.contains("poster-viewingdata")
+    ) {
+        const ratingSpan = viewingData.querySelector(".rating");
+        if (ratingSpan) {
+            const ratedClass = Array.from(ratingSpan.classList).find(
+                (c) => c.includes("rated-")
+            );
+            if (ratedClass) {
+                const scoreMatch = ratedClass.match(/\d+/);
+                if (scoreMatch) {
+                    rating = parseInt(scoreMatch[0], 10) / 2;
+                }
+            }
+        }
+    }
+
+    if (slug) {
+        results.push({ slug, title, rating });
+    }
+    });
+
+    return results;
+}
+
+/**
+ * Scrapes a single page and returns films found on it.
+ * Page 1 also returns the total page count from the paginator.
+ */
+export async function scrapePage(username, page = 1) {
+    const pageObj = await browserContext.newPage();
+
+    await pageObj.route("**/*", (route) => {
         const type = route.request().resourceType();
         if (type === "font" || type === "image" || type === "media") {
             route.abort();
@@ -85,90 +121,111 @@ export async function scrapeWithBrowser(username) {
         }
     });
 
+    const targetUrl =
+        `https://letterboxd.com/${username}/films/page/${page}/`;
+
+    console.log(`Navigating to: ${targetUrl}`);
+
     try {
-        const targetUrl = `https://letterboxd.com/${username}/films/`;
-        console.log(`Navigating to: ${targetUrl}`);
+        await pageObj.waitForTimeout(Math.random() * 2000 + 1000);
 
-        await page.waitForTimeout(Math.random() * 2000 + 1000);
-
-        const response = await page.goto(targetUrl, {
+        const res = await pageObj.goto(targetUrl, {
             waitUntil: "domcontentloaded",
             timeout: 60000,
         });
 
-        if (!response) {
-            throw new Error("No response from page");
-        }
-
-        if (response.status() === 404) {
-            throw new Error("Page not found (404)");
-        }
-
-        if (response.status() === 403) {
+        if (!res) throw new Error("No response from page");
+        if (res.status() === 404) throw new Error("Page not found (404)");
+        if (res.status() === 403)
             throw new Error("Cloudflare blocked the request (403)");
-        }
 
-        await page.waitForSelector('[data-component-class="LazyPoster"]', {
-            timeout: 15000,
-        });
+        await pageObj.waitForSelector(
+            '[data-component-class="LazyPoster"]',
+            { timeout: 15000 }
+        );
 
-        const films = await page.evaluate(() => {
-            const results = [];
-            const posters = document.querySelectorAll(
-                '[data-component-class="LazyPoster"]'
-            );
-
-            posters.forEach((poster) => {
-                const slug = poster.getAttribute("data-item-slug");
-                const filmId = poster.getAttribute("data-film-id");
-                const displayName = poster.getAttribute(
-                    "data-item-full-display-name"
+        const { films, totalPages } = await pageObj.evaluate(
+            ({ isFirstPage }) => {
+                const posters = document.querySelectorAll(
+                    '[data-component-class="LazyPoster"]'
                 );
-                let rating = null;
 
-                const viewingData = poster.nextElementSibling;
-                if (
-                    viewingData &&
-                    viewingData.classList.contains("poster-viewingdata")
-                ) {
-                    const ratingSpan = viewingData.querySelector(".rating");
-                    if (ratingSpan) {
-                        const ratedClass = Array.from(
-                            ratingSpan.classList
-                        ).find((c) => c.includes("rated-"));
-                        if (ratedClass) {
-                            const scoreMatch = ratedClass.match(/\d+/);
-                            if (scoreMatch) {
-                                rating = parseInt(scoreMatch[0], 10) / 2;
+                // Reuse extraction logic in browser context
+                const results = [];
+                posters.forEach((poster) => {
+                    const slug = poster.getAttribute("data-item-slug");
+                    const filmId = poster.getAttribute("data-film-id");
+                    const displayName = poster.getAttribute(
+                        "data-item-full-display-name"
+                    );
+                    let rating = null;
+
+                    const viewingData = poster.nextElementSibling;
+                    if (
+                        viewingData &&
+                        viewingData.classList.contains("poster-viewingdata")
+                    ) {
+                        const ratingSpan = viewingData.querySelector(".rating");
+                        if (ratingSpan) {
+                            const ratedClass = Array.from(
+                                ratingSpan.classList
+                            ).find((c) => c.includes("rated-"));
+                            if (ratedClass) {
+                                const scoreMatch = ratedClass.match(/\d+/);
+                                if (scoreMatch) {
+                                    rating = parseInt(scoreMatch[0], 10) / 2;
+                                }
                             }
                         }
                     }
+
+                    if (slug) {
+                        results.push({ slug, filmId, displayName, rating });
+                    }
+                });
+
+                // Extract total pages from paginator on page 1
+                let totalPages = 1;
+                if (isFirstPage) {
+                    const lastPageLink = document.querySelector(
+                        ".paginate-pages a.last-page, .pagination a[href*='/page/']:last-of-type"
+                    );
+                    if (lastPageLink) {
+                        const match =
+                            lastPageLink.href.match(/\/page\/(\d+)\//);
+                        if (match) {
+                            totalPages = parseInt(match[1], 10);
+                        }
+                    } else {
+                        // Fallback: find highest page number in paginator
+                        const allPageLinks = document.querySelectorAll(
+                            ".paginate-pages a"
+                        );
+                        let max = 1;
+                        allPageLinks.forEach((a) => {
+                            const m = a.href.match(/\/page\/(\d+)\//);
+                            if (m) max = Math.max(max, parseInt(m[1], 10));
+                        });
+                        totalPages = max;
+                    }
                 }
 
-                if (slug) {
-                    results.push({
-                        slug,
-                        filmId,
-                        displayName,
-                        rating,
-                    });
-                }
-            });
+                return { films: results, totalPages };
+            },
+            { isFirstPage: page === 1 }
+        );
 
-            return results;
-        });
-
-        await page.close();
-        return films;
+        await pageObj.close();
+        return { films, totalPages };
     } catch (err) {
-        await page
+        await pageObj
             .screenshot({
-                path: "error_debug.png",
+                path: `error_debug_page${page}.png`,
                 animations: "disabled",
                 timeout: 5000,
             })
             .catch(() => {});
-        await page.close().catch(() => {});
+        await pageObj.close().catch(() => {});
         throw err;
     }
 }
