@@ -46,12 +46,35 @@ export async function scrapePage(username, page = 1) {
     const pageObj = await browserContext.newPage();
 
     await pageObj.route("**/*", (route) => {
-        const type = route.request().resourceType();
-        if (["font", "image", "media", "stylesheet", "other"].includes(type)) {
-            route.abort();
-        } else {
-            route.continue();
-        }
+    const url = route.request().url();
+    const type = route.request().resourceType();
+
+    // 1. Block by Resource Type (Most effective)
+    if (["font", "image", "media", "stylesheet", "other"].includes(type)) {
+        return route.abort();
+    }
+
+    // 2. Block by Domain (Stop the hidden JS scripts that eat bandwidth)
+    const blockList = [
+        "google-analytics",
+        "googletagmanager",
+        "doubleclick",
+        "amazon-adsystem",
+        "intergient",
+        "playwire",
+        "btloader",
+        "privacymanager",
+        "googlesyndication",
+        "creativecdn",
+        "casalemedia",
+        "rtbhouse"
+    ];
+
+    if (blockList.some(domain => url.includes(domain))) {
+        return route.abort();
+    }
+
+    route.continue();
     });
 
     const targetUrl = `https://letterboxd.com/${username}/films/page/${page}/`;
