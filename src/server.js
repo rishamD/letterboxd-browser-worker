@@ -1,8 +1,17 @@
 import "dotenv/config";
 import http from "http";
-import { SQSClient, ReceiveMessageCommand, DeleteMessageCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
-import { initBrowser, scrapePage } from "./scraper.js";
+import {
+    SQSClient,
+    ReceiveMessageCommand,
+    DeleteMessageCommand,
+    SendMessageCommand,
+} from "@aws-sdk/client-sqs";
+import {
+    DynamoDBClient,
+    PutItemCommand,
+    UpdateItemCommand,
+} from "@aws-sdk/client-dynamodb";
+import { initBrowser, scrapePage, refreshContext } from "./scraper.js";
 
 const sqs = new SQSClient({ region: process.env.AWS_REGION });
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
@@ -26,27 +35,32 @@ function serializeFilms(films) {
 
 async function mergeAndWriteFilms(username, newFilms, updateMeta = true) {
     const serialized = serializeFilms(newFilms);
-    
+
     if (updateMeta) {
-        await dynamo.send(new PutItemCommand({
-            TableName: DYNAMODB_TABLE,
-            Item: {
-                username: { S: username },
-                status: { S: "complete" },
-                updatedAt: { S: new Date().toISOString() },
-                films: { L: serialized },
-            },
-        }));
+        await dynamo.send(
+            new PutItemCommand({
+                TableName: DYNAMODB_TABLE,
+                Item: {
+                    username: { S: username },
+                    status: { S: "complete" },
+                    updatedAt: { S: new Date().toISOString() },
+                    films: { L: serialized },
+                },
+            })
+        );
     } else {
-        await dynamo.send(new UpdateItemCommand({
-            TableName: DYNAMODB_TABLE,
-            Key: { username: { S: username } },
-            UpdateExpression: "SET films = list_append(if_not_exists(films, :empty_list), :f)",
-            ExpressionAttributeValues: {
-                ":f": { L: serialized },
-                ":empty_list": { L: [] }
-            },
-        }));
+        await dynamo.send(
+            new UpdateItemCommand({
+                TableName: DYNAMODB_TABLE,
+                Key: { username: { S: username } },
+                UpdateExpression:
+                    "SET films = list_append(if_not_exists(films, :empty_list), :f)",
+                ExpressionAttributeValues: {
+                    ":f": { L: serialized },
+                    ":empty_list": { L: [] },
+                },
+            })
+        );
     }
 }
 
@@ -58,36 +72,40 @@ async function processMessage(message) {
     const body = JSON.parse(message.Body);
     const { username, page } = body;
 
-    console.log(`📥 Processing: ${username} ${page ? `(p${page})` : "(Initial Job)"}`);
+    console.log(
+        `📥 Processing: ${username} ${page ? `(p${page})` : "(Initial Job)"}`
+    );
 
     try {
         if (page) {
-            // Process a specific background page
             const { films } = await scrapePage(username, page);
             await mergeAndWriteFilms(username, films, false);
         } else {
-            // Process Page 1 and queue the rest
             const { films, totalPages } = await scrapePage(username, 1);
             await mergeAndWriteFilms(username, films, true);
-            
+
             for (let p = 2; p <= totalPages; p++) {
-                await sqs.send(new SendMessageCommand({
-                    QueueUrl: SQS_QUEUE_URL,
-                    MessageBody: JSON.stringify({ username, page: p }),
-                }));
+                await sqs.send(
+                    new SendMessageCommand({
+                        QueueUrl: SQS_QUEUE_URL,
+                        MessageBody: JSON.stringify({ username, page: p }),
+                    })
+                );
             }
         }
 
-        // Only delete from SQS if processing was successful
-        await sqs.send(new DeleteMessageCommand({
-            QueueUrl: SQS_QUEUE_URL,
-            ReceiptHandle: message.ReceiptHandle,
-        }));
-        
-        console.log(`✅ Finished: ${username} ${page ? `p${page}` : 'Initial'}`);
+        await sqs.send(
+            new DeleteMessageCommand({
+                QueueUrl: SQS_QUEUE_URL,
+                ReceiptHandle: message.ReceiptHandle,
+            })
+        );
+
+        console.log(
+            `✅ Finished: ${username} ${page ? `p${page}` : "Initial"}`
+        );
     } catch (err) {
         if (err.message === "403_BLOCKED") {
-            // Re-throw so the poll loop can trigger the cooldown
             throw err;
         }
         console.error(`❌ Error processing ${username}:`, err.message);
@@ -96,29 +114,30 @@ async function processMessage(message) {
 
 async function poll() {
     console.log("👂 Polling SQS for one job at a time...");
-    
+
     while (true) {
         try {
-            const response = await sqs.send(new ReceiveMessageCommand({
-                QueueUrl: SQS_QUEUE_URL,
-                MaxNumberOfMessages: 1, 
-                WaitTimeSeconds: 20,
-            }));
+            const response = await sqs.send(
+                new ReceiveMessageCommand({
+                    QueueUrl: SQS_QUEUE_URL,
+                    MaxNumberOfMessages: 1,
+                    WaitTimeSeconds: 20,
+                })
+            );
 
             if (response.Messages && response.Messages.length > 0) {
                 try {
                     await processMessage(response.Messages[0]);
                 } catch (processErr) {
                     if (processErr.message === "403_BLOCKED") {
-                        // Wait 60 seconds before trying the next SQS message
-                        console.log("⏸️ Cooling down for 60s due to 403 block...");
-                        await new Promise(r => setTimeout(r, 60000));
+                        console.log("♻️ Refreshing context after 403 block...");
+                        await refreshContext();
                     }
                 }
             }
         } catch (err) {
             console.error("SQS Polling Error:", err);
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise((r) => setTimeout(r, 5000));
         }
     }
 }
